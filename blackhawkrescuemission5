@@ -23,7 +23,7 @@ local partVisibility = {}
 local fullbrightLoop
 
 -- Configurações do ESP
-local ESP_MALE_COLOR = Color3.fromRGB(255, 0, 255)
+local ESP_MALE_COLOR = Color3.fromRGB(255, 255, 255)
 local ESP_ZOMBIE_COLOR = Color3.fromRGB(255, 0, 0)
 local USE_HIGHLIGHT = true
 
@@ -34,7 +34,7 @@ local COLOR_MEDIUM = Color3.fromRGB(255, 200, 0)    -- Amarelo-laranja (50% vis�
 local COLOR_VISIBLE = Color3.fromRGB(0, 255, 0)     -- Verde (100% visível)
 
 -- Configuração de refresh rate (AGORA AJUSTÁVEL)
-local VISIBILITY_CHECK_INTERVAL = 0.15 -- Aumentado de 0.1 para 0.15 (melhor performance)
+local VISIBILITY_CHECK_INTERVAL = 0.08 -- Aumentado de 0.1 para 0.15 (melhor performance)
 
 -- Converter HEX para Color3
 local function hexToColor3(hex)
@@ -525,7 +525,7 @@ local RefreshRateSlider = ESPTab:CreateSlider({
     Name = "Visibility Refresh Rate (ms)",
     Range = {25, 500},
     Increment = 25,
-    CurrentValue = 150,
+    CurrentValue = 25,
     Flag = "RefreshRateSlider",
     Callback = function(Value)
         VISIBILITY_CHECK_INTERVAL = Value / 1000
@@ -846,7 +846,7 @@ end)
 local updateCounter = 0
 local lastVisibilityUpdate = 0
 local lastFullUpdate = 0
-local visibilityBatchSize = 3
+local visibilityBatchSize = 4
 local currentBatchIndex = 1
 
 -- Cache de characters para processar em batches
@@ -960,7 +960,7 @@ RunService.Heartbeat:Connect(function()
         end
         
         -- Verificação completa menos frequente (a cada 3 segundos)
-        if (currentTime - lastFullUpdate) >= 3 then
+        if (currentTime - lastFullUpdate) >= 2 then
             -- Limpar characters mortos/removidos
             for character, espObject in pairs(espMaleObjects) do
                 if not character or not character.Parent or not espObject or not espObject.Parent then
