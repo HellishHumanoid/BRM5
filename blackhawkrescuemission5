@@ -1,0 +1,1025 @@
+-- PART 1: Configurações, Funções Base e Sistema de Visibilidade
+
+-- Carregar Rayfield Library
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+-- Serviços
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+local UserInputService = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- Variáveis de controle
+local espMaleEnabled = false
+local espZombieEnabled = false
+local visibilityCheckEnabled = false
+local fullbrightEnabled = false
+local espMaleObjects = {}
+local espZombieObjects = {}
+local partVisibility = {}
+local fullbrightLoop
+
+-- Configurações do ESP
+local ESP_MALE_COLOR = Color3.fromRGB(255, 0, 255)
+local ESP_ZOMBIE_COLOR = Color3.fromRGB(255, 0, 0)
+local USE_HIGHLIGHT = true
+
+-- Cores para visibilidade (Gradiente: Vermelho -> Laranja -> Amarelo -> Verde)
+local COLOR_HIDDEN = Color3.fromRGB(255, 0, 0)      -- Vermelho (0% visível)
+local COLOR_LOW = Color3.fromRGB(255, 140, 0)       -- Laranja escuro (25% visível)
+local COLOR_MEDIUM = Color3.fromRGB(255, 200, 0)    -- Amarelo-laranja (50% visível)
+local COLOR_VISIBLE = Color3.fromRGB(0, 255, 0)     -- Verde (100% visível)
+
+-- Configuração de refresh rate (AGORA AJUSTÁVEL)
+local VISIBILITY_CHECK_INTERVAL = 0.15 -- Aumentado de 0.1 para 0.15 (melhor performance)
+
+-- Converter HEX para Color3
+local function hexToColor3(hex)
+    hex = hex:gsub("#", "")
+    if #hex ~= 6 then return nil end
+    
+    local r = tonumber(hex:sub(1, 2), 16)
+    local g = tonumber(hex:sub(3, 4), 16)
+    local b = tonumber(hex:sub(5, 6), 16)
+    
+    if r and g and b then
+        return Color3.fromRGB(r, g, b)
+    end
+    return nil
+end
+
+-- Sistema de verificação de visibilidade (OTIMIZADO)
+local function checkPartVisibility(part)
+    if not part or not part:IsA("BasePart") then return 0 end
+    
+    local camPos = Camera.CFrame.Position
+    local partPos = part.Position
+    
+    -- Apenas 2 pontos de teste para melhor performance
+    local testPoints = {
+        partPos,
+        partPos + Vector3.new(0, part.Size.Y/4, 0)
+    }
+    
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+    
+    local ignoreList = {}
+    if LocalPlayer.Character then
+        table.insert(ignoreList, LocalPlayer.Character)
+    end
+    if part.Parent then
+        table.insert(ignoreList, part.Parent)
+    end
+    rayParams.FilterDescendantsInstances = ignoreList
+    
+    local visibleCount = 0
+    for _, testPos in ipairs(testPoints) do
+        local direction = (testPos - camPos)
+        local result = workspace:Raycast(camPos, direction, rayParams)
+        
+        if not result then
+            visibleCount = visibleCount + 1
+        end
+    end
+    
+    return visibleCount / #testPoints
+end
+
+local function getCharacterVisibility(character)
+    if not character then return 0 end
+    
+    -- Partes mais importantes primeiro (otimização)
+    local criticalParts = {"Head", "UpperTorso", "LowerTorso"}
+    local armParts = {"LeftUpperArm", "RightUpperArm", "LeftLowerArm", "RightLowerArm"}
+    
+    local totalVisibility = 0
+    local visiblePartCount = 0
+    local criticalVisible = 0
+    local criticalCount = 0
+    
+    if not partVisibility[character] then
+        partVisibility[character] = {}
+    end
+    
+    -- Verificar partes críticas primeiro (cabeça e torso)
+    for _, partName in ipairs(criticalParts) do
+        local part = character:FindFirstChild(partName)
+        if part and part:IsA("BasePart") then
+            local visibility = checkPartVisibility(part)
+            partVisibility[character][part] = visibility
+            
+            if visibility > 0 then
+                criticalVisible = criticalVisible + visibility
+                criticalCount = criticalCount + 1
+                totalVisibility = totalVisibility + visibility
+                visiblePartCount = visiblePartCount + 1
+            end
+        end
+    end
+    
+    -- Verificar braços (peso menor)
+    for _, partName in ipairs(armParts) do
+        local part = character:FindFirstChild(partName)
+        if part and part:IsA("BasePart") then
+            local visibility = checkPartVisibility(part)
+            partVisibility[character][part] = visibility
+            
+            if visibility > 0 then
+                totalVisibility = totalVisibility + (visibility * 0.5) -- Braços contam 50%
+                visiblePartCount = visiblePartCount + 0.5
+            end
+        end
+    end
+    
+    if visiblePartCount == 0 then
+        return 0
+    end
+    
+    -- Calcular visibilidade total
+    local finalVisibility = totalVisibility / math.max(criticalCount + 2, 1) -- Normalizar
+    
+    -- Se só braços estão visíveis, limitar a 0.35 (laranja-amarelo)
+    if criticalCount == 0 and visiblePartCount > 0 then
+        return math.min(finalVisibility, 0.35)
+    end
+    
+    return math.clamp(finalVisibility, 0, 1)
+end
+
+local function getColorFromVisibility(visibility)
+    -- Sistema de gradiente ajustado: Verde só com 50%+ do corpo visível
+    
+    if visibility <= 0.2 then
+        -- Vermelho (0%) -> Laranja escuro (20%)
+        local t = visibility / 0.2
+        return COLOR_HIDDEN:Lerp(COLOR_LOW, t)
+        
+    elseif visibility < 0.5 then
+        -- Laranja escuro (20%) -> Amarelo-laranja (50%)
+        local t = (visibility - 0.2) / 0.3
+        return COLOR_LOW:Lerp(COLOR_MEDIUM, t)
+        
+    else
+        -- Amarelo-laranja (50%) -> Verde (100%)
+        -- Verde só aparece quando 50%+ do corpo está visível
+        local t = (visibility - 0.5) / 0.5
+        return COLOR_MEDIUM:Lerp(COLOR_VISIBLE, t)
+    end
+end
+
+local function updateMaleESPColors()
+    for character, espObject in pairs(espMaleObjects) do
+        if character and character.Parent and espObject and espObject.Parent then
+            local success = pcall(function()
+                if visibilityCheckEnabled then
+                    local overallVisibility = getCharacterVisibility(character)
+                    local color = getColorFromVisibility(overallVisibility)
+                    
+                    if espObject:IsA("Highlight") then
+                        espObject.FillColor = color
+                    elseif espObject:IsA("Folder") then
+                        for _, adornment in pairs(espObject:GetChildren()) do
+                            if adornment:IsA("BoxHandleAdornment") and adornment.Name == "ESPBox" then
+                                local part = adornment.Adornee
+                                if part and partVisibility[character] and partVisibility[character][part] then
+                                    local partVis = partVisibility[character][part]
+                                    adornment.Color3 = getColorFromVisibility(partVis)
+                                end
+                            end
+                        end
+                    end
+                else
+                    if espObject:IsA("Highlight") then
+                        espObject.FillColor = ESP_MALE_COLOR
+                    elseif espObject:IsA("Folder") then
+                        for _, adornment in pairs(espObject:GetChildren()) do
+                            if adornment:IsA("BoxHandleAdornment") and adornment.Name == "ESPBox" then
+                                adornment.Color3 = ESP_MALE_COLOR
+                            end
+                        end
+                    end
+                end
+            end)
+            if not success then
+                espMaleObjects[character] = nil
+            end
+        end
+    end
+end
+
+local function updateZombieESPColors()
+    for character, espObject in pairs(espZombieObjects) do
+        if character and character.Parent and espObject and espObject.Parent then
+            local success = pcall(function()
+                if visibilityCheckEnabled then
+                    local overallVisibility = getCharacterVisibility(character)
+                    local color = getColorFromVisibility(overallVisibility)
+                    
+                    if espObject:IsA("Highlight") then
+                        espObject.FillColor = color
+                    elseif espObject:IsA("Folder") then
+                        for _, adornment in pairs(espObject:GetChildren()) do
+                            if adornment:IsA("BoxHandleAdornment") and adornment.Name == "ESPBox" then
+                                local part = adornment.Adornee
+                                if part and partVisibility[character] and partVisibility[character][part] then
+                                    local partVis = partVisibility[character][part]
+                                    adornment.Color3 = getColorFromVisibility(partVis)
+                                end
+                            end
+                        end
+                    end
+                else
+                    if espObject:IsA("Highlight") then
+                        espObject.FillColor = ESP_ZOMBIE_COLOR
+                    elseif espObject:IsA("Folder") then
+                        for _, adornment in pairs(espObject:GetChildren()) do
+                            if adornment:IsA("BoxHandleAdornment") and adornment.Name == "ESPBox" then
+                                adornment.Color3 = ESP_ZOMBIE_COLOR
+                            end
+                        end
+                    end
+                end
+            end)
+            if not success then
+                espZombieObjects[character] = nil
+            end
+        end
+    end
+end
+
+-- Fullbright functions
+local function brightFunc()
+    pcall(function()
+        Lighting.Brightness = 2
+        Lighting.ClockTime = 14
+        Lighting.FogEnd = 100000
+        Lighting.GlobalShadows = false
+        Lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+    end)
+end
+
+local function enableFullbright()
+    if fullbrightLoop then fullbrightLoop:Disconnect() end
+    brightFunc()
+    local success = pcall(function()
+        fullbrightLoop = RunService.RenderStepped:Connect(brightFunc)
+    end)
+    if not success then
+        fullbrightLoop = RunService.Heartbeat:Connect(brightFunc)
+    end
+end
+
+local function disableFullbright()
+    if fullbrightLoop then
+        fullbrightLoop:Disconnect()
+        fullbrightLoop = nil
+    end
+    pcall(function()
+        Lighting.Brightness = 1
+        Lighting.ClockTime = 12
+        Lighting.FogEnd = 100000
+        Lighting.GlobalShadows = true
+        Lighting.OutdoorAmbient = Color3.fromRGB(70, 70, 70)
+    end)
+end
+
+-- ESP creation functions
+local function createESPHighlight(character, color)
+    local success, result = pcall(function()
+        local h = Instance.new("Highlight")
+        h.Name = "ESPHighlight"
+        h.Adornee = character
+        h.FillColor = color
+        h.OutlineColor = Color3.fromRGB(255, 255, 255)
+        h.FillTransparency = 0.5
+        h.OutlineTransparency = 0
+        h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        h.Parent = character
+        return h
+    end)
+    return success and result or nil
+end
+
+local function createESPBox(character, color)
+    local espFolder = Instance.new("Folder")
+    espFolder.Name = "ESPFolder"
+    espFolder.Parent = character
+    
+    -- Apenas partes principais para melhor performance
+    local mainParts = {"Head", "UpperTorso", "LowerTorso", "LeftUpperArm", "RightUpperArm"}
+    
+    for _, partName in pairs(mainParts) do
+        local part = character:FindFirstChild(partName)
+        if part and part:IsA("BasePart") then
+            pcall(function()
+                local box = Instance.new("BoxHandleAdornment")
+                box.Name = "ESPBox"
+                box.Size = part.Size
+                box.Adornee = part
+                box.Color3 = color
+                box.Transparency = 0.5
+                box.AlwaysOnTop = true
+                box.ZIndex = 10
+                box.Parent = espFolder
+                
+                local outline = Instance.new("BoxHandleAdornment")
+                outline.Name = "ESPOutline"
+                outline.Size = part.Size + Vector3.new(0.05, 0.05, 0.05)
+                outline.Adornee = part
+                outline.Color3 = Color3.fromRGB(255, 255, 255)
+                outline.Transparency = 0.8
+                outline.AlwaysOnTop = true
+                outline.ZIndex = 9
+                outline.Parent = espFolder
+            end)
+        end
+    end
+    return espFolder
+end
+-- PART 2: Funções ESP, Interface Rayfield, KEYBINDS e Loop Principal
+
+-- PLAYER/NPC ESP FUNCTIONS
+local function createMaleESP(character)
+    if not character or espMaleObjects[character] then return end
+    local root = character:FindFirstChild("Root")
+    if not root then return end
+    
+    local espObject = createESPHighlight(character, ESP_MALE_COLOR)
+    if not espObject then
+        espObject = createESPBox(character, ESP_MALE_COLOR)
+        USE_HIGHLIGHT = false
+    end
+    
+    if espObject then
+        espMaleObjects[character] = espObject
+    end
+end
+
+local function removeMaleESP(character)
+    if espMaleObjects[character] then
+        pcall(function() espMaleObjects[character]:Destroy() end)
+        espMaleObjects[character] = nil
+    end
+    if partVisibility[character] then
+        partVisibility[character] = nil
+    end
+end
+
+local function updateMaleESP()
+    if espMaleEnabled then
+        for _, model in pairs(workspace:GetChildren()) do
+            if model.Name == "Male" and model:FindFirstChild("Root") then
+                if not espMaleObjects[model] then
+                    createMaleESP(model)
+                end
+            end
+        end
+    else
+        for character, espObject in pairs(espMaleObjects) do
+            pcall(function() espObject:Destroy() end)
+        end
+        espMaleObjects = {}
+    end
+end
+
+-- ZOMBIE ESP FUNCTIONS
+local function createZombieESP(character)
+    if not character or espZombieObjects[character] then return end
+    local root = character:FindFirstChild("Root")
+    if not root then return end
+    
+    local espObject = createESPHighlight(character, ESP_ZOMBIE_COLOR)
+    if not espObject then
+        espObject = createESPBox(character, ESP_ZOMBIE_COLOR)
+    end
+    
+    if espObject then
+        espZombieObjects[character] = espObject
+    end
+end
+
+local function removeZombieESP(character)
+    if espZombieObjects[character] then
+        pcall(function() espZombieObjects[character]:Destroy() end)
+        espZombieObjects[character] = nil
+    end
+    if partVisibility[character] then
+        partVisibility[character] = nil
+    end
+end
+
+local function updateZombieESP()
+    if espZombieEnabled then
+        for _, model in pairs(workspace:GetChildren()) do
+            if model.Name == "Zombie" and model:FindFirstChild("Root") then
+                if not espZombieObjects[model] then
+                    createZombieESP(model)
+                end
+            end
+        end
+    else
+        for character, espObject in pairs(espZombieObjects) do
+            pcall(function() espObject:Destroy() end)
+        end
+        espZombieObjects = {}
+    end
+end
+
+-- Workspace listeners
+workspace.ChildAdded:Connect(function(child)
+    task.wait(0.1)
+    if child.Name == "Male" and espMaleEnabled then
+        createMaleESP(child)
+    elseif child.Name == "Zombie" and espZombieEnabled then
+        createZombieESP(child)
+    end
+end)
+
+workspace.ChildRemoved:Connect(function(child)
+    if child.Name == "Male" and espMaleObjects[child] then
+        removeMaleESP(child)
+    elseif child.Name == "Zombie" and espZombieObjects[child] then
+        removeZombieESP(child)
+    end
+end)
+
+-- Criar Rayfield Window
+local Window = Rayfield:CreateWindow({
+    Name = "Rafso - BRM5 ESP & Fullbright",
+    LoadingTitle = "Loading",
+    LoadingSubtitle = "by Rafso",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "BRM5_ESP",
+        FileName = "ESP_Config"
+    },
+    Discord = {
+        Enabled = false,
+        Invite = "noinvite",
+        RememberJoins = true
+    },
+    KeySystem = false
+})
+
+-- Tab Principal - ESP
+local ESPTab = Window:CreateTab("ESP", 4483362458)
+local ESPSection = ESPTab:CreateSection("Player ESP")
+
+-- Toggle Player/NPC ESP
+local ESPMaleToggle = ESPTab:CreateToggle({
+    Name = "Player/NPC ESP (Players)",
+    CurrentValue = false,
+    Flag = "ESPMaleToggle",
+    Callback = function(Value)
+        espMaleEnabled = Value
+        if espMaleEnabled then
+            updateMaleESP()
+        else
+            updateMaleESP()
+        end
+    end,
+})
+
+local ZombieSection = ESPTab:CreateSection("Zombie ESP")
+
+-- Toggle ESP Zombie
+local ESPZombieToggle = ESPTab:CreateToggle({
+    Name = "ESP Zombie",
+    CurrentValue = false,
+    Flag = "ESPZombieToggle",
+    Callback = function(Value)
+        espZombieEnabled = Value
+        if espZombieEnabled then
+            updateZombieESP()
+        else
+            updateZombieESP()
+        end
+    end,
+})
+
+-- SEÇÃO: Visibility Check
+local VisibilitySection = ESPTab:CreateSection("Visibility Check")
+
+-- Toggle Visibility Check
+local VisibilityToggle = ESPTab:CreateToggle({
+    Name = "Visibility Check",
+    CurrentValue = false,
+    Flag = "VisibilityToggle",
+    Callback = function(Value)
+        visibilityCheckEnabled = Value
+        if visibilityCheckEnabled then
+            -- Visibility ativado
+        else
+            updateMaleESPColors()
+            updateZombieESPColors()
+        end
+    end,
+})
+
+-- Slider para Refresh Rate
+local RefreshRateSlider = ESPTab:CreateSlider({
+    Name = "Visibility Refresh Rate (ms)",
+    Range = {25, 500},
+    Increment = 25,
+    CurrentValue = 150,
+    Flag = "RefreshRateSlider",
+    Callback = function(Value)
+        VISIBILITY_CHECK_INTERVAL = Value / 1000
+    end,
+})
+
+local ColorSection = ESPTab:CreateSection("ESP Colors")
+
+-- Dropdown de Cores para Male
+local MaleColorDropdown = ESPTab:CreateDropdown({
+    Name = "Player/NPC Color",
+    Options = {"White", "Red", "Green", "Blue", "Yellow", "Cyan", "Orange", "Purple", "Pink"},
+    CurrentOption = {"White"},
+    MultipleOptions = false,
+    Flag = "MaleColorDropdown",
+    Callback = function(Option)
+        local colors = {
+            Pink = Color3.fromRGB(255, 0, 255),
+            Red = Color3.fromRGB(255, 0, 0),
+            Green = Color3.fromRGB(0, 255, 0),
+            Blue = Color3.fromRGB(0, 0, 255),
+            Yellow = Color3.fromRGB(255, 255, 0),
+            Cyan = Color3.fromRGB(0, 255, 255),
+            Orange = Color3.fromRGB(255, 136, 0),
+            Purple = Color3.fromRGB(136, 0, 255),
+            White = Color3.fromRGB(255, 255, 255)
+        }
+        
+        ESP_MALE_COLOR = colors[Option[1]]
+        
+        if not visibilityCheckEnabled then
+            updateMaleESPColors()
+        end
+    end,
+})
+
+-- Dropdown de Cores para Zombie
+local ZombieColorDropdown = ESPTab:CreateDropdown({
+    Name = "Zombie Color",
+    Options = {"Pink", "Red", "Green", "Blue", "Yellow", "Cyan", "Orange", "Purple", "White"},
+    CurrentOption = {"Red"},
+    MultipleOptions = false,
+    Flag = "ZombieColorDropdown",
+    Callback = function(Option)
+        local colors = {
+            Pink = Color3.fromRGB(255, 0, 255),
+            Red = Color3.fromRGB(255, 0, 0),
+            Green = Color3.fromRGB(0, 255, 0),
+            Blue = Color3.fromRGB(0, 0, 255),
+            Yellow = Color3.fromRGB(255, 255, 0),
+            Cyan = Color3.fromRGB(0, 255, 255),
+            Orange = Color3.fromRGB(255, 136, 0),
+            Purple = Color3.fromRGB(136, 0, 255),
+            White = Color3.fromRGB(255, 255, 255)
+        }
+        
+        ESP_ZOMBIE_COLOR = colors[Option[1]]
+        
+        if not visibilityCheckEnabled then
+            updateZombieESPColors()
+        end
+    end,
+})
+
+-- Input para Cor Hex Male
+local MaleHexInput = ESPTab:CreateInput({
+    Name = "Player/NPC Custom HEX",
+    PlaceholderText = "FF00FF",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(Text)
+        local color = hexToColor3(Text)
+        if color then
+            ESP_MALE_COLOR = color
+            
+            if not visibilityCheckEnabled then
+                updateMaleESPColors()
+            end
+        end
+    end,
+})
+
+-- Input para Cor Hex Zombie
+local ZombieHexInput = ESPTab:CreateInput({
+    Name = "Zombie Custom HEX",
+    PlaceholderText = "FF0000",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(Text)
+        local color = hexToColor3(Text)
+        if color then
+            ESP_ZOMBIE_COLOR = color
+            
+            if not visibilityCheckEnabled then
+                updateZombieESPColors()
+            end
+        end
+    end,
+})
+
+-- Tab de Fullbright
+local FullbrightTab = Window:CreateTab("Fullbright", 4483362458)
+local FullbrightSection = FullbrightTab:CreateSection("Fullbright")
+
+local FullbrightToggle = FullbrightTab:CreateToggle({
+    Name = "Enable Fullbright",
+    CurrentValue = false,
+    Flag = "FullbrightToggle",
+    Callback = function(Value)
+        fullbrightEnabled = Value
+        if fullbrightEnabled then
+            enableFullbright()
+        else
+            disableFullbright()
+        end
+    end,
+})
+
+-- ========== TAB DE KEYBINDS (NOVO!) ==========
+local KeybindsTab = Window:CreateTab("Keybinds", 4483362458)
+local KeybindsSection = KeybindsTab:CreateSection("ESP Keybinds")
+
+-- Keybind para Player/NPC ESP
+local MaleESPKeybind = KeybindsTab:CreateKeybind({
+    Name = "Toggle Player/NPC ESP",
+    CurrentKeybind = "F1",
+    HoldToInteract = false,
+    Flag = "MaleESPKeybind",
+    Callback = function(Keybind)
+        -- Atualiza apenas a keybind
+    end,
+})
+
+-- Keybind para Zombie ESP
+local ZombieESPKeybind = KeybindsTab:CreateKeybind({
+    Name = "Toggle Zombie ESP",
+    CurrentKeybind = "F2",
+    HoldToInteract = false,
+    Flag = "ZombieESPKeybind",
+    Callback = function(Keybind)
+        -- Atualiza apenas a keybind
+    end,
+})
+
+-- Keybind para Visibility Check
+local VisibilityKeybind = KeybindsTab:CreateKeybind({
+    Name = "Toggle Visibility Check",
+    CurrentKeybind = "F3",
+    HoldToInteract = false,
+    Flag = "VisibilityKeybind",
+    Callback = function(Keybind)
+        -- Atualiza apenas a keybind
+    end,
+})
+
+-- Keybind para Fullbright
+local FullbrightKeybind = KeybindsTab:CreateKeybind({
+    Name = "Toggle Fullbright",
+    CurrentKeybind = "F4",
+    HoldToInteract = false,
+    Flag = "FullbrightKeybind",
+    Callback = function(Keybind)
+        -- Atualiza apenas a keybind
+    end,
+})
+
+-- Keybind para Toggle GUI
+local GUIKeybind = KeybindsTab:CreateKeybind({
+    Name = "Toggle GUI Visibility",
+    CurrentKeybind = "RightShift",
+    HoldToInteract = false,
+    Flag = "GUIKeybind",
+    Callback = function(Keybind)
+        -- Atualiza apenas a keybind
+    end,
+})
+
+local KeybindsInfo = KeybindsTab:CreateParagraph({
+    Title = "Keybinds",
+    Content = "Click on a keybind button and press any key to set it.\n\nDefault Keybinds:\nF1 = Player/NPC ESP\nF2 = Zombie ESP\nF3 = Visibility Check\nF4 = Fullbright\nK = Toggle GUI\n\nKeybinds work even when GUI is hidden!"
+})
+
+-- Tab de Configurações
+local SettingsTab = Window:CreateTab("Settings", 4483362458)
+local InfoSection = SettingsTab:CreateSection("Destroy")
+
+-- Botão para destruir GUI
+local DestroyButton = SettingsTab:CreateButton({
+    Name = "Destroy GUI",
+    Callback = function()
+        espMaleEnabled = false
+        espZombieEnabled = false
+        visibilityCheckEnabled = false
+        fullbrightEnabled = false
+        
+        if fullbrightLoop then
+            fullbrightLoop:Disconnect()
+            fullbrightLoop = nil
+        end
+        
+        disableFullbright()
+        
+        for character, espObject in pairs(espMaleObjects) do
+            pcall(function()
+                if espObject and espObject.Parent then
+                    espObject:Destroy()
+                end
+            end)
+        end
+        
+        for character, espObject in pairs(espZombieObjects) do
+            pcall(function()
+                if espObject and espObject.Parent then
+                    espObject:Destroy()
+                end
+            end)
+        end
+        
+        espMaleObjects = {}
+        espZombieObjects = {}
+        partVisibility = {}
+        
+        for _, model in pairs(workspace:GetDescendants()) do
+            pcall(function()
+                if model:IsA("Highlight") and model.Name == "ESPHighlight" then
+                    model:Destroy()
+                end
+                if model:IsA("Folder") and model.Name == "ESPFolder" then
+                    model:Destroy()
+                end
+                if model:IsA("BoxHandleAdornment") and (model.Name == "ESPBox" or model.Name == "ESPOutline") then
+                    model:Destroy()
+                end
+            end)
+        end
+        
+        Rayfield:Notify({
+            Title = "ESP Removed",
+            Content = "All traces cleaned!",
+            Duration = 3,
+            Image = 4483362458,
+        })
+        
+        task.wait(1)
+        Rayfield:Destroy()
+    end,
+})
+
+-- Tab de Créditos
+local CreditsTab = Window:CreateTab("Credits", 4483362458)
+local CreditsSection = CreditsTab:CreateSection("by Rafso")
+
+local VerParagraph = CreditsTab:CreateParagraph({
+    Title = "Version 2.0",
+    Content = "Features:\n• Player/NPC ESP\n• Zombie ESP\n• Visibility Detection\n• Adjustable Refresh Rate\n• Individual Colors\n• HEX Color Support\n• Optional Fullbright\n• Keybinds"
+})
+
+-- ========== SISTEMA DE DETECÇÃO DE KEYBINDS (NOVO!) ==========
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    -- Toggle Player/NPC ESP (F1 ou tecla customizada)
+    if input.KeyCode.Name == Rayfield.Flags["MaleESPKeybind"].CurrentKeybind or 
+       input.KeyCode.Name == "F1" then
+        espMaleEnabled = not espMaleEnabled
+        ESPMaleToggle:Set(espMaleEnabled)
+        
+        if espMaleEnabled then
+            updateMaleESP()
+        else
+            updateMaleESP()
+        end
+    end
+    
+    -- Toggle Zombie ESP (F2 ou tecla customizada)
+    if input.KeyCode.Name == Rayfield.Flags["ZombieESPKeybind"].CurrentKeybind or 
+       input.KeyCode.Name == "F2" then
+        espZombieEnabled = not espZombieEnabled
+        ESPZombieToggle:Set(espZombieEnabled)
+        
+        if espZombieEnabled then
+            updateZombieESP()
+        else
+            updateZombieESP()
+        end
+    end
+    
+    -- Toggle Visibility Check (F3 ou tecla customizada)
+    if input.KeyCode.Name == Rayfield.Flags["VisibilityKeybind"].CurrentKeybind or 
+       input.KeyCode.Name == "F3" then
+        visibilityCheckEnabled = not visibilityCheckEnabled
+        VisibilityToggle:Set(visibilityCheckEnabled)
+        
+        if not visibilityCheckEnabled then
+            updateMaleESPColors()
+            updateZombieESPColors()
+        end
+    end
+    
+    -- Toggle Fullbright (F4 ou tecla customizada)
+    if input.KeyCode.Name == Rayfield.Flags["FullbrightKeybind"].CurrentKeybind or 
+       input.KeyCode.Name == "F4" then
+        fullbrightEnabled = not fullbrightEnabled
+        FullbrightToggle:Set(fullbrightEnabled)
+        
+        if fullbrightEnabled then
+            enableFullbright()
+        else
+            disableFullbright()
+        end
+    end
+    
+    -- Toggle GUI Visibility (RightShift)
+    if input.KeyCode == Enum.KeyCode.K then
+        Rayfield:Toggle()
+    end
+end)
+
+-- Loop principal ULTRA OTIMIZADO com Visibility Check
+local updateCounter = 0
+local lastVisibilityUpdate = 0
+local lastFullUpdate = 0
+local visibilityBatchSize = 3
+local currentBatchIndex = 1
+
+-- Cache de characters para processar em batches
+local maleCharactersList = {}
+local zombieCharactersList = {}
+
+local function rebuildCharacterLists()
+    maleCharactersList = {}
+    zombieCharactersList = {}
+    
+    for character, _ in pairs(espMaleObjects) do
+        if character and character.Parent then
+            table.insert(maleCharactersList, character)
+        end
+    end
+    
+    for character, _ in pairs(espZombieObjects) do
+        if character and character.Parent then
+            table.insert(zombieCharactersList, character)
+        end
+    end
+end
+
+-- Função para processar visibility em batches (previne spikes)
+local function processVisibilityBatch()
+    if not visibilityCheckEnabled then return end
+    
+    local totalCharacters = #maleCharactersList + #zombieCharactersList
+    if totalCharacters == 0 then return end
+    
+    local processed = 0
+    
+    -- Processar Males
+    while processed < visibilityBatchSize and currentBatchIndex <= #maleCharactersList do
+        local character = maleCharactersList[currentBatchIndex]
+        if character and character.Parent and espMaleObjects[character] then
+            local espObject = espMaleObjects[character]
+            if espObject and espObject.Parent then
+                local success = pcall(function()
+                    local overallVisibility = getCharacterVisibility(character)
+                    local color = getColorFromVisibility(overallVisibility)
+                    
+                    if espObject:IsA("Highlight") then
+                        espObject.FillColor = color
+                    elseif espObject:IsA("Folder") then
+                        for _, adornment in pairs(espObject:GetChildren()) do
+                            if adornment:IsA("BoxHandleAdornment") and adornment.Name == "ESPBox" then
+                                local part = adornment.Adornee
+                                if part and partVisibility[character] and partVisibility[character][part] then
+                                    local partVis = partVisibility[character][part]
+                                    adornment.Color3 = getColorFromVisibility(partVis)
+                                end
+                            end
+                        end
+                    end
+                end)
+            end
+        end
+        currentBatchIndex = currentBatchIndex + 1
+        processed = processed + 1
+    end
+    
+    -- Processar Zombies
+    local zombieStartIndex = currentBatchIndex - #maleCharactersList
+    if zombieStartIndex > 0 then
+        while processed < visibilityBatchSize and zombieStartIndex <= #zombieCharactersList do
+            local character = zombieCharactersList[zombieStartIndex]
+            if character and character.Parent and espZombieObjects[character] then
+                local espObject = espZombieObjects[character]
+                if espObject and espObject.Parent then
+                    local success = pcall(function()
+                        local overallVisibility = getCharacterVisibility(character)
+                        local color = getColorFromVisibility(overallVisibility)
+                        
+                        if espObject:IsA("Highlight") then
+                            espObject.FillColor = color
+                        elseif espObject:IsA("Folder") then
+                            for _, adornment in pairs(espObject:GetChildren()) do
+                                if adornment:IsA("BoxHandleAdornment") and adornment.Name == "ESPBox" then
+                                    local part = adornment.Adornee
+                                    if part and partVisibility[character] and partVisibility[character][part] then
+                                        local partVis = partVisibility[character][part]
+                                        adornment.Color3 = getColorFromVisibility(partVis)
+                                    end
+                                end
+                            end
+                        end
+                    end)
+                end
+            end
+            zombieStartIndex = zombieStartIndex + 1
+            currentBatchIndex = currentBatchIndex + 1
+            processed = processed + 1
+        end
+    end
+    
+    -- Reset quando terminar o batch
+    if currentBatchIndex > totalCharacters then
+        currentBatchIndex = 1
+    end
+end
+
+RunService.Heartbeat:Connect(function()
+    if espMaleEnabled or espZombieEnabled then
+        local currentTime = tick()
+        
+        -- Processar visibility em batches (distribui carga entre frames)
+        if visibilityCheckEnabled and (currentTime - lastVisibilityUpdate) >= VISIBILITY_CHECK_INTERVAL then
+            processVisibilityBatch()
+            lastVisibilityUpdate = currentTime
+        end
+        
+        -- Verificação completa menos frequente (a cada 3 segundos)
+        if (currentTime - lastFullUpdate) >= 3 then
+            -- Limpar characters mortos/removidos
+            for character, espObject in pairs(espMaleObjects) do
+                if not character or not character.Parent or not espObject or not espObject.Parent then
+                    pcall(function()
+                        if espObject then espObject:Destroy() end
+                    end)
+                    espMaleObjects[character] = nil
+                    if partVisibility[character] then
+                        partVisibility[character] = nil
+                    end
+                end
+            end
+            
+            for character, espObject in pairs(espZombieObjects) do
+                if not character or not character.Parent or not espObject or not espObject.Parent then
+                    pcall(function()
+                        if espObject then espObject:Destroy() end
+                    end)
+                    espZombieObjects[character] = nil
+                    if partVisibility[character] then
+                        partVisibility[character] = nil
+                    end
+                end
+            end
+            
+            -- Adicionar novos characters
+            if espMaleEnabled then
+                for _, model in pairs(workspace:GetChildren()) do
+                    if model.Name == "Male" and model:FindFirstChild("Root") and not espMaleObjects[model] then
+                        createMaleESP(model)
+                    end
+                end
+            end
+            
+            if espZombieEnabled then
+                for _, model in pairs(workspace:GetChildren()) do
+                    if model.Name == "Zombie" and model:FindFirstChild("Root") and not espZombieObjects[model] then
+                        createZombieESP(model)
+                    end
+                end
+            end
+            
+            -- Rebuild lists para batch processing
+            rebuildCharacterLists()
+            
+            lastFullUpdate = currentTime
+        end
+        
+        -- Manter fullbright apenas se estiver ativado
+        if fullbrightEnabled and not fullbrightLoop then
+            enableFullbright()
+        end
+    end
+end)
+
+-- Notificação de carregamento
+Rayfield:Notify({
+    Title = "ESP System Loaded",
+    Content = "Good luck, Have fun!",
+    Duration = 5,
+    Image = 4483362458,
+})
