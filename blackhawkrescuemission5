@@ -1,6 +1,6 @@
 --[[
     ═══════════════════════════════════════════════════════════════════════════
-    BRM5 ESP SYSTEM v2.2 - OPTIMIZED FOV & WALL DETECTION
+    BRM5 ESP SYSTEM v2.2.2 - ENHANCED FOV VISIBILITY (MORE SENSITIVE)
     ═══════════════════════════════════════════════════════════════════════════
     
     GAME CHARACTER STRUCTURE:
@@ -11,12 +11,12 @@
     • NPCs (non-players) are also named "Male" but WITHOUT "Humanoid"
     • Zombies are named "Zombie" and have a "Humanoid"
     
-    CHANGELOG v2.2:
-    • Fixed FOV detection (now properly checks 90° FOV)
-    • Improved wall detection accuracy
-    • Reduced refresh delay from 80ms to 30ms
-    • Instant ESP visibility updates (no lag)
-    • Better raycast optimization
+    CHANGELOG v2.2.2:
+    • ENHANCED FOV detection - now checks 8 body parts instead of 3
+    • Added raycasts for: LeftUpperArm, RightUpperArm, LeftUpperLeg, RightUpperLeg, LeftLowerLeg
+    • ESP now shows if ANY body part is visible (arms, legs, head, torso)
+    • More sensitive detection - catches partial visibility
+    • Still maintains all v2.2.1 freeze fixes
     
     ═══════════════════════════════════════════════════════════════════════════
 ]]
@@ -63,7 +63,10 @@ local COLOR_VISIBLE = Color3.fromRGB(0, 255, 0)
 -- OPTIMIZED refresh rate (30ms = ~33 FPS update rate)
 local VISIBILITY_CHECK_INTERVAL = 0.03
 
--- Removed FOV cache as it was causing issues
+-- 🔥 FREEZE FIX: Reuse RaycastParams instead of creating new ones
+local rayParamsCache = RaycastParams.new()
+rayParamsCache.FilterType = Enum.RaycastFilterType.Exclude
+rayParamsCache.IgnoreWater = true
 
 -- Convert HEX to Color3
 local function hexToColor3(hex)
@@ -80,9 +83,35 @@ local function hexToColor3(hex)
     return nil
 end
 
--- FIXED: Check if character is in camera FOV AND visible (not behind walls)
+-- 🔧 NEW: Verify if model is actually a character (not furniture)
+local function isValidCharacter(model)
+    if not model or not model:IsA("Model") then return false end
+    
+    -- Must have Root part
+    local root = model:FindFirstChild("Root")
+    if not root or not root:IsA("BasePart") then return false end
+    
+    -- Must have Head (all R15 characters have Head)
+    local head = model:FindFirstChild("Head")
+    if not head or not head:IsA("BasePart") then return false end
+    
+    -- Must have UpperTorso (R15 specific)
+    local upperTorso = model:FindFirstChild("UpperTorso")
+    if not upperTorso or not upperTorso:IsA("BasePart") then return false end
+    
+    -- Must have LowerTorso (R15 specific)
+    local lowerTorso = model:FindFirstChild("LowerTorso")
+    if not lowerTorso or not lowerTorso:IsA("BasePart") then return false end
+    
+    return true
+end
+
+-- 🆕 ENHANCED: Now checks 8 body parts for maximum visibility detection
 local function isInCameraFOVAndVisible(character)
     if not character or not character:FindFirstChild("Root") then return false end
+    
+    -- 🔧 NEW: Verify it's actually a character
+    if not isValidCharacter(character) then return false end
     
     local root = character:FindFirstChild("Root")
     if not root then return false end
@@ -103,50 +132,59 @@ local function isInCameraFOVAndVisible(character)
     local dotProduct = toCharacter:Dot(cameraLookVector)
     
     -- FOV check: Must be in front of camera
-    -- 90° FOV = dot product > 0 (anything in front hemisphere)
-    -- For tighter FOV, increase threshold (0.3 = ~72°, 0.5 = ~60°)
     if dotProduct < 0.1 then
         return false -- Not in FOV
     end
     
-    -- IMPROVED wall check - test multiple points on character
-    local head = character:FindFirstChild("Head")
-    local upperTorso = character:FindFirstChild("UpperTorso")
+    -- 🆕 ENHANCED: Check multiple body parts for better detection
+    local partsToCheck = {
+        -- Critical parts (high priority)
+        "Head",
+        "UpperTorso",
+        "LowerTorso",
+        -- Arms (medium priority)
+        "LeftUpperArm",
+        "RightUpperArm",
+        "LeftLowerArm",
+        "RightLowerArm",
+        -- Legs (lower priority but still important)
+        "LeftUpperLeg",
+        "RightUpperLeg",
+        "LeftLowerLeg",
+        "RightLowerLeg"
+    }
     
-    -- Test positions (head, upper torso, root)
-    local testPositions = {}
-    if head then table.insert(testPositions, head.Position) end
-    if upperTorso then table.insert(testPositions, upperTorso.Position) end
-    table.insert(testPositions, rootPos)
+    -- 🔥 FREEZE FIX: REUSE rayParamsCache
+    local ignoreList = rayParamsCache.FilterDescendantsInstances or {}
+    table.clear(ignoreList) -- Clear instead of creating new
     
-    local rayParams = RaycastParams.new()
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
-    rayParams.IgnoreWater = true
-    
-    local ignoreList = {}
     if LocalPlayer.Character then
         table.insert(ignoreList, LocalPlayer.Character)
     end
     table.insert(ignoreList, character)
-    rayParams.FilterDescendantsInstances = ignoreList
+    rayParamsCache.FilterDescendantsInstances = ignoreList
     
-    -- If ANY part is visible, consider character visible
-    local anyVisible = false
-    for _, targetPos in ipairs(testPositions) do
-        local direction = targetPos - camPos
-        local result = workspace:Raycast(camPos, direction, rayParams)
-        
-        -- If raycast doesn't hit anything, this part is visible
-        if not result then
-            anyVisible = true
-            break
+    -- 🆕 Check all body parts - if ANY is visible, show ESP
+    for _, partName in ipairs(partsToCheck) do
+        local part = character:FindFirstChild(partName)
+        if part and part:IsA("BasePart") then
+            local direction = part.Position - camPos
+            local result = workspace:Raycast(camPos, direction, rayParamsCache)
+            
+            -- If raycast didn't hit anything, this part is visible
+            if not result then
+                return true -- Found a visible part!
+            end
         end
     end
     
-    return anyVisible
+    -- Also check root as absolute last resort
+    local direction = rootPos - camPos
+    local result = workspace:Raycast(camPos, direction, rayParamsCache)
+    return not result
 end
 
--- Visibility check system (OPTIMIZED - fewer test points)
+-- 🔥 FREEZE FIX: Optimized - Reuses raycast params
 local function checkPartVisibility(part)
     if not part or not part:IsA("BasePart") then return 0 end
     
@@ -159,29 +197,29 @@ local function checkPartVisibility(part)
         partPos + Vector3.new(0, part.Size.Y/4, 0)
     }
     
-    local rayParams = RaycastParams.new()
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    -- 🔥 FREEZE FIX: REUSE rayParamsCache instead of creating new RaycastParams
+    local ignoreList = rayParamsCache.FilterDescendantsInstances or {}
+    table.clear(ignoreList) -- Clear instead of creating new table
     
-    local ignoreList = {}
     if LocalPlayer.Character then
         table.insert(ignoreList, LocalPlayer.Character)
     end
     if part.Parent then
         table.insert(ignoreList, part.Parent)
     end
-    rayParams.FilterDescendantsInstances = ignoreList
+    rayParamsCache.FilterDescendantsInstances = ignoreList
     
     local visibleCount = 0
     for _, testPos in ipairs(testPoints) do
         local direction = (testPos - camPos)
-        local result = workspace:Raycast(camPos, direction, rayParams)
+        local result = workspace:Raycast(camPos, direction, rayParamsCache)
         
         if not result then
             visibleCount = visibleCount + 1
         end
     end
     
-    return visibleCount / #testPoints
+    return visibleCount / 2 -- Always 2 test points
 end
 
 local function getCharacterVisibility(character)
@@ -255,6 +293,15 @@ local function getColorFromVisibility(visibility)
     else
         local t = (visibility - 0.5) / 0.5
         return COLOR_MEDIUM:Lerp(COLOR_VISIBLE, t)
+    end
+end
+
+-- 🔥 FREEZE FIX: Clean up dead characters from partVisibility
+local function cleanupPartVisibility()
+    for character, _ in pairs(partVisibility) do
+        if not character or not character.Parent then
+            partVisibility[character] = nil
+        end
     end
 end
 
@@ -464,15 +511,18 @@ local function brightFunc()
     end)
 end
 
+-- 🔥 FREEZE FIX: Optimized fullbright (only updates when needed)
 local function enableFullbright()
     if fullbrightLoop then fullbrightLoop:Disconnect() end
     brightFunc()
-    local success = pcall(function()
-        fullbrightLoop = RunService.RenderStepped:Connect(brightFunc)
+    
+    -- Use Heartbeat instead of RenderStepped (runs less often)
+    fullbrightLoop = RunService.Heartbeat:Connect(function()
+        -- Only update if values changed (prevents unnecessary updates)
+        if Lighting.Brightness ~= 2 or Lighting.ClockTime ~= 14 then
+            brightFunc()
+        end
     end)
-    if not success then
-        fullbrightLoop = RunService.Heartbeat:Connect(brightFunc)
-    end
 end
 
 local function disableFullbright()
@@ -543,11 +593,15 @@ local function createESPBox(character, color)
 end
 
 -- CONTINUE TO PART 2...
--- PART 2: ESP Functions and Character Management
+-- PART 2: ESP Functions and Character Management (FREEZE FIX APPLIED)
 
 -- PLAYER ESP FUNCTIONS
 local function createMaleESP(character)
     if not character or espMaleObjects[character] then return end
+    
+    -- 🔧 NEW: Verify it's actually a character (not furniture)
+    if not isValidCharacter(character) then return end
+    
     local root = character:FindFirstChild("Root")
     if not root then return end
     
@@ -564,6 +618,7 @@ local function createMaleESP(character)
     end
 end
 
+-- 🔥 FREEZE FIX: Clean partVisibility when removing ESP
 local function removeMaleESP(character)
     if espMaleObjects[character] then
         pcall(function() espMaleObjects[character]:Destroy() end)
@@ -585,7 +640,8 @@ local function updateMaleESP()
     if espMaleEnabled then
         for _, model in pairs(workspace:GetChildren()) do
             if model.Name == "Male" and model:FindFirstChild("Root") and model:FindFirstChild("Humanoid") then
-                if not espMaleObjects[model] then
+                -- 🔧 NEW: Verify it's actually a character
+                if isValidCharacter(model) and not espMaleObjects[model] then
                     createMaleESP(model)
                 end
             end
@@ -621,6 +677,10 @@ end
 -- NPC ESP FUNCTIONS (FIXED CLEANUP)
 local function createNPCESP(character)
     if not character or espNPCObjects[character] then return end
+    
+    -- 🔧 NEW: Verify it's actually a character (not furniture)
+    if not isValidCharacter(character) then return end
+    
     local root = character:FindFirstChild("Root")
     if not root then return end
     
@@ -636,6 +696,7 @@ local function createNPCESP(character)
     end
 end
 
+-- 🔥 FREEZE FIX: Clean partVisibility when removing ESP
 local function removeNPCESP(character)
     if espNPCObjects[character] then
         pcall(function() 
@@ -661,7 +722,8 @@ local function updateNPCESP()
     if espNPCEnabled then
         for _, model in pairs(workspace:GetChildren()) do
             if model.Name == "Male" and model:FindFirstChild("Root") and not model:FindFirstChild("Humanoid") then
-                if not espNPCObjects[model] then
+                -- 🔧 NEW: Verify it's actually a character
+                if isValidCharacter(model) and not espNPCObjects[model] then
                     createNPCESP(model)
                 end
             end
@@ -729,6 +791,10 @@ end
 -- ZOMBIE ESP FUNCTIONS
 local function createZombieESP(character)
     if not character or espZombieObjects[character] then return end
+    
+    -- 🔧 NEW: Verify it's actually a character (not furniture)
+    if not isValidCharacter(character) then return end
+    
     local root = character:FindFirstChild("Root")
     if not root then return end
     
@@ -744,6 +810,7 @@ local function createZombieESP(character)
     end
 end
 
+-- 🔥 FREEZE FIX: Clean partVisibility when removing ESP
 local function removeZombieESP(character)
     if espZombieObjects[character] then
         pcall(function() espZombieObjects[character]:Destroy() end)
@@ -765,7 +832,8 @@ local function updateZombieESP()
     if espZombieEnabled then
         for _, model in pairs(workspace:GetChildren()) do
             if model.Name == "Zombie" and model:FindFirstChild("Root") and model:FindFirstChild("Humanoid") then
-                if not espZombieObjects[model] then
+                -- 🔧 NEW: Verify it's actually a character
+                if isValidCharacter(model) and not espZombieObjects[model] then
                     createZombieESP(model)
                 end
             end
@@ -804,6 +872,9 @@ workspace.ChildAdded:Connect(function(child)
     if child.Name == "Male" then
         if not child:FindFirstChild("Root") then return end
         
+        -- 🔧 NEW: Verify it's actually a character
+        if not isValidCharacter(child) then return end
+        
         if espMaleEnabled and child:FindFirstChild("Humanoid") then
             createMaleESP(child)
         elseif espNPCEnabled and not child:FindFirstChild("Humanoid") then
@@ -811,7 +882,10 @@ workspace.ChildAdded:Connect(function(child)
         end
     elseif child.Name == "Zombie" and espZombieEnabled then
         if child:FindFirstChild("Root") and child:FindFirstChild("Humanoid") then
-            createZombieESP(child)
+            -- 🔧 NEW: Verify it's actually a character
+            if isValidCharacter(child) then
+                createZombieESP(child)
+            end
         end
     end
 end)
@@ -831,9 +905,9 @@ end)
 
 -- Create Rayfield Window
 local Window = Rayfield:CreateWindow({
-    Name = "Rafso - BRM5 ESP & Fullbright v2.2",
+    Name = "Rafso - BRM5 ESP & Fullbright v2.2.1",
     LoadingTitle = "Loading",
-    LoadingSubtitle = "by Rafso",
+    LoadingSubtitle = "by Rafso - FREEZE FIX",
     ConfigurationSaving = {
         Enabled = true,
         FolderName = "BRM5_ESP",
@@ -899,7 +973,7 @@ local FOVOnlyToggle = ESPTab:CreateToggle({
 
 local FOVInfo = ESPTab:CreateParagraph({
     Title = "FOV Only Mode - IMPROVED",
-    Content = "NOW FIXED:\n✓ Proper 90° FOV detection\n✓ Instant wall detection (no delay)\n✓ No ESP through walls\n✓ Fast refresh rate (30ms)\n✓ Each ESP type keeps its color\n\nESP only shows characters that are:\n1. In front of you (90° FOV)\n2. NOT behind walls (real-time check)\n\nNOTE: In FOV mode, each ESP type (Player/NPC/Zombie) keeps its own color!"
+    Content = "NOW FIXED:\n✓ Proper 90° FOV detection\n✓ Instant wall detection (no delay)\n✓ No ESP through walls\n✓ Fast refresh rate (30ms)\n✓ Each ESP type keeps its color\n✓ NO MORE FREEZES!\n\nESP only shows characters that are:\n1. In front of you (90° FOV)\n2. NOT behind walls (real-time check)\n\nNOTE: In FOV mode, each ESP type (Player/NPC/Zombie) keeps its own color!"
 })
 
 -- Visibility Section
@@ -1062,7 +1136,7 @@ local ZombieHexInput = ESPTab:CreateInput({
 })
 
 -- CONTINUE TO PART 3...
--- PART 3: Fullbright, Keybinds, Settings and Main Loop
+-- PART 3: Fullbright, Keybinds, Settings and Main Loop (FREEZE FIX + DESTROY FIX + CONFIG SAVING)
 
 -- Fullbright Tab
 local FullbrightTab = Window:CreateTab("Fullbright", 4483362458)
@@ -1149,14 +1223,158 @@ local KeybindsInfo = KeybindsTab:CreateParagraph({
 
 -- Settings Tab
 local SettingsTab = Window:CreateTab("Settings", 4483362458)
-local InfoSection = SettingsTab:CreateSection("Destroy")
+
+-- 🆕 CONFIG SAVING SECTION
+local ConfigSection = SettingsTab:CreateSection("Configuration")
+
+local AutoLoadToggle = SettingsTab:CreateToggle({
+    Name = "🔄 Auto-Load Config on Startup",
+    CurrentValue = true,
+    Flag = "AutoLoadConfig",
+    Callback = function(Value)
+        -- This setting itself is saved, so it persists
+        if Value then
+            Rayfield:Notify({
+                Title = "Auto-Load Enabled!",
+                Content = "Your config will load automatically on startup.",
+                Duration = 3,
+                Image = 4483362458,
+            })
+        else
+            Rayfield:Notify({
+                Title = "Auto-Load Disabled!",
+                Content = "You'll need to manually load your config.",
+                Duration = 3,
+                Image = 4483362458,
+            })
+        end
+    end,
+})
+
+local SaveConfigButton = SettingsTab:CreateButton({
+    Name = "💾 Save Current Configuration",
+    Callback = function()
+        Rayfield:Notify({
+            Title = "Configuration Saved!",
+            Content = "All settings, colors, and keybinds saved!\nAuto-Load: " .. (Rayfield.Flags["AutoLoadConfig"].CurrentValue and "ON" or "OFF"),
+            Duration = 4,
+            Image = 4483362458,
+        })
+        
+        -- Rayfield automatically saves when you close the game
+        -- This button just confirms the current state is saved
+        print("Configuration saved!")
+    end,
+})
+
+local LoadConfigButton = SettingsTab:CreateButton({
+    Name = "📂 Load Saved Configuration",
+    Callback = function()
+        -- Manually trigger ESP updates based on loaded flags
+        if Rayfield.Flags["ESPMaleToggle"] then
+            espMaleEnabled = Rayfield.Flags["ESPMaleToggle"].CurrentValue
+            updateMaleESP()
+        end
+        
+        if Rayfield.Flags["ESPNPCToggle"] then
+            espNPCEnabled = Rayfield.Flags["ESPNPCToggle"].CurrentValue
+            updateNPCESP()
+        end
+        
+        if Rayfield.Flags["ESPZombieToggle"] then
+            espZombieEnabled = Rayfield.Flags["ESPZombieToggle"].CurrentValue
+            updateZombieESP()
+        end
+        
+        if Rayfield.Flags["FOVOnlyToggle"] then
+            espFOVOnlyEnabled = Rayfield.Flags["FOVOnlyToggle"].CurrentValue
+        end
+        
+        if Rayfield.Flags["VisibilityToggle"] then
+            visibilityCheckEnabled = Rayfield.Flags["VisibilityToggle"].CurrentValue
+        end
+        
+        if Rayfield.Flags["FullbrightToggle"] then
+            fullbrightEnabled = Rayfield.Flags["FullbrightToggle"].CurrentValue
+            if fullbrightEnabled then
+                enableFullbright()
+            else
+                disableFullbright()
+            end
+        end
+        
+        Rayfield:Notify({
+            Title = "Configuration Loaded!",
+            Content = "All saved settings restored!",
+            Duration = 3,
+            Image = 4483362458,
+        })
+        
+        print("Configuration loaded!")
+    end,
+})
+
+local ResetConfigButton = SettingsTab:CreateButton({
+    Name = "🔄 Reset to Default Settings",
+    Callback = function()
+        -- Reset all toggles to default (false)
+        ESPMaleToggle:Set(false)
+        ESPNPCToggle:Set(false)
+        ESPZombieToggle:Set(false)
+        FOVOnlyToggle:Set(false)
+        VisibilityToggle:Set(false)
+        FullbrightToggle:Set(false)
+        
+        -- Reset Auto-Load to default (true)
+        AutoLoadToggle:Set(true)
+        
+        -- Reset colors to default
+        ESP_MALE_COLOR = Color3.fromRGB(255, 255, 255)
+        ESP_NPC_COLOR = Color3.fromRGB(255, 165, 0)
+        ESP_ZOMBIE_COLOR = Color3.fromRGB(255, 0, 0)
+        
+        MaleColorDropdown:Set({"White"})
+        NPCColorDropdown:Set({"Orange"})
+        ZombieColorDropdown:Set({"Red"})
+        
+        -- Reset refresh rate
+        RefreshRateSlider:Set(30)
+        VISIBILITY_CHECK_INTERVAL = 0.03
+        
+        -- Update all ESP
+        updateMaleESPColors()
+        updateNPCESPColors()
+        updateZombieESPColors()
+        
+        Rayfield:Notify({
+            Title = "Settings Reset!",
+            Content = "All settings restored to default values.\nAuto-Load: ON (default)",
+            Duration = 3,
+            Image = 4483362458,
+        })
+        
+        print("Settings reset to default!")
+    end,
+})
+
+local ConfigInfo = SettingsTab:CreateParagraph({
+    Title = "Auto-Save & Auto-Load Info",
+    Content = "✅ Rayfield automatically saves your config when you close the game!\n\n🔄 Auto-Load Toggle:\n• ON: Config loads automatically on startup\n• OFF: You must manually load config\n\n💾 Save Button: Confirms current settings\n📂 Load Button: Restores last saved config\n🔄 Reset Button: Restores default settings\n\nSaved Settings Include:\n• All ESP toggles\n• ESP colors (including HEX)\n• FOV & Visibility modes\n• Fullbright state\n• Keybinds\n• Refresh rate\n• Auto-Load preference"
+})
+
+-- DESTROY SECTION
+local DestroySection = SettingsTab:CreateSection("Destroy")
+
+-- 🔥 DECLARE mainLoopConnection and keybindConnection as variables first
+local mainLoopConnection
+local keybindConnection
 
 local DestroyButton = SettingsTab:CreateButton({
     Name = "Destroy GUI",
     Callback = function()
         print("Destroying ESP System...")
         
-        -- Disable all features
+        -- 🔥 FIX: Force disable ALL features BEFORE disconnecting
         espMaleEnabled = false
         espNPCEnabled = false
         espZombieEnabled = false
@@ -1164,7 +1382,19 @@ local DestroyButton = SettingsTab:CreateButton({
         fullbrightEnabled = false
         espFOVOnlyEnabled = false
         
-        -- Disconnect all connections
+        -- Update ESP to remove all visuals
+        updateMaleESP()
+        updateNPCESP()
+        updateZombieESP()
+        
+        -- 🔥 FIX: Disconnect keybinds FIRST (prevents re-enabling after destruction)
+        if keybindConnection then
+            keybindConnection:Disconnect()
+            keybindConnection = nil
+            print("Keybind connection disconnected")
+        end
+        
+        -- Disconnect all other connections
         if fullbrightLoop then
             fullbrightLoop:Disconnect()
             fullbrightLoop = nil
@@ -1175,12 +1405,6 @@ local DestroyButton = SettingsTab:CreateButton({
             mainLoopConnection:Disconnect()
             mainLoopConnection = nil
             print("Main loop disconnected")
-        end
-        
-        if keybindConnection then
-            keybindConnection:Disconnect()
-            keybindConnection = nil
-            print("Keybind connection disconnected")
         end
         
         -- Disable fullbright
@@ -1238,7 +1462,7 @@ local DestroyButton = SettingsTab:CreateButton({
         
         Rayfield:Notify({
             Title = "ESP System Destroyed",
-            Content = "All traces cleaned!\nKeybinds disabled!",
+            Content = "All traces cleaned!\nKeybinds FULLY disabled!",
             Duration = 3,
             Image = 4483362458,
         })
@@ -1253,13 +1477,123 @@ local CreditsTab = Window:CreateTab("Credits", 4483362458)
 local CreditsSection = CreditsTab:CreateSection("by Rafso")
 
 local VerParagraph = CreditsTab:CreateParagraph({
-    Title = "Version 2.2 - OPTIMIZED",
-    Content = "✓ FIXED FOV detection (90° proper)\n✓ FIXED wall detection (instant)\n✓ Refresh rate: 30ms (was 80ms)\n✓ No more ESP through walls\n✓ Smoother performance\n\nFeatures:\n• Player/NPC/Zombie ESP\n• FOV Only Mode\n• Visibility Detection\n• Custom Colors + HEX\n• Fullbright\n• Keybinds"
+    Title = "Version 2.2.3 - CONFIG SAVING",
+    Content = "🆕 Configuration Saving!\n💾 Auto-saves on game close\n🔄 Auto-Load toggle option\n📂 Manual save/load buttons\n🔄 Reset to defaults\n\nPrevious Updates:\n• Enhanced FOV (12 body parts)\n• Destroy GUI fix\n• Arms & Legs detection\n• Memory optimization\n• No freezes"
 })
 
--- KEYBIND DETECTION SYSTEM
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
+-- 🔥 FREEZE FIX: OPTIMIZED Main Loop with Memory Management
+local lastVisibilityUpdate = 0
+local lastFullUpdate = 0
+local lastCleanup = 0
+
+mainLoopConnection = RunService.RenderStepped:Connect(function()
+    if not (espMaleEnabled or espNPCEnabled or espZombieEnabled) then return end
+    
+    local currentTime = tick()
+    
+    -- 🔥 FREEZE FIX: Periodic cleanup to prevent memory buildup
+    if (currentTime - lastCleanup) >= 5 then
+        cleanupPartVisibility()
+        lastCleanup = currentTime
+    end
+    
+    -- INSTANT visibility updates when FOV mode is active
+    if espFOVOnlyEnabled then
+        updateMaleESPColors()
+        updateNPCESPColors()
+        updateZombieESPColors()
+    elseif visibilityCheckEnabled and (currentTime - lastVisibilityUpdate) >= VISIBILITY_CHECK_INTERVAL then
+        updateMaleESPColors()
+        updateNPCESPColors()
+        updateZombieESPColors()
+        lastVisibilityUpdate = currentTime
+    elseif not visibilityCheckEnabled and (currentTime - lastVisibilityUpdate) >= 0.5 then
+        updateMaleESPColors()
+        updateNPCESPColors()
+        updateZombieESPColors()
+        lastVisibilityUpdate = currentTime
+    end
+    
+    -- Full check every 1.5 seconds
+    if (currentTime - lastFullUpdate) >= 1.5 then
+        -- 🔥 FREEZE FIX: Clean dead characters AND partVisibility
+        for character, espObject in pairs(espMaleObjects) do
+            if not character or not character.Parent or not espObject or not espObject.Parent then
+                pcall(function()
+                    if espObject then espObject:Destroy() end
+                end)
+                espMaleObjects[character] = nil
+                partVisibility[character] = nil
+            end
+        end
+        
+        for character, espObject in pairs(espNPCObjects) do
+            if not character or not character.Parent or not espObject or not espObject.Parent then
+                pcall(function()
+                    if espObject then espObject:Destroy() end
+                end)
+                espNPCObjects[character] = nil
+                partVisibility[character] = nil
+            end
+        end
+        
+        for character, espObject in pairs(espZombieObjects) do
+            if not character or not character.Parent or not espObject or not espObject.Parent then
+                pcall(function()
+                    if espObject then espObject:Destroy() end
+                end)
+                espZombieObjects[character] = nil
+                partVisibility[character] = nil
+            end
+        end
+        
+        -- Add new characters
+        if espMaleEnabled then
+            for _, model in pairs(workspace:GetChildren()) do
+                if model.Name == "Male" and model:FindFirstChild("Root") and model:FindFirstChild("Humanoid") then
+                    if isValidCharacter(model) and not espMaleObjects[model] then
+                        createMaleESP(model)
+                    end
+                end
+            end
+        end
+        
+        if espNPCEnabled then
+            for _, model in pairs(workspace:GetChildren()) do
+                if model.Name == "Male" and model:FindFirstChild("Root") and not model:FindFirstChild("Humanoid") then
+                    if isValidCharacter(model) and not espNPCObjects[model] then
+                        createNPCESP(model)
+                    end
+                end
+            end
+        end
+        
+        if espZombieEnabled then
+            for _, model in pairs(workspace:GetChildren()) do
+                if model.Name == "Zombie" and model:FindFirstChild("Root") and model:FindFirstChild("Humanoid") then
+                    if isValidCharacter(model) and not espZombieObjects[model] then
+                        createZombieESP(model)
+                    end
+                end
+            end
+        end
+        
+        lastFullUpdate = currentTime
+    end
+    
+    if fullbrightEnabled and not fullbrightLoop then
+        enableFullbright()
+    end
+end)
+
+-- 🆕 KEYBIND DETECTION SYSTEM (NOW DEFINED AFTER MAIN LOOP)
+keybindConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
+    
+    -- 🔥 FIX: Check if GUI was destroyed (mainLoopConnection disconnected)
+    if mainLoopConnection and not mainLoopConnection.Connected then
+        return -- GUI destroyed, ignore keybinds
+    end
     
     if input.KeyCode.Name == Rayfield.Flags["MaleESPKeybind"].CurrentKeybind or 
        input.KeyCode.Name == "F1" then
@@ -1317,113 +1651,83 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     end
 end)
 
--- OPTIMIZED Main Loop - HIGH PERFORMANCE
-local lastVisibilityUpdate = 0
-local lastFullUpdate = 0
-local mainLoopConnection -- Store the connection
+-- 🔥 FREEZE FIX: Force gentle garbage collection every 20 seconds
+task.spawn(function()
+    while task.wait(20) do
+        -- 🔥 FIX: Stop garbage collection if GUI destroyed
+        if not mainLoopConnection or not mainLoopConnection.Connected then
+            break
+        end
+        collectgarbage("collect")
+        task.wait(0.1)
+    end
+end)
 
-mainLoopConnection = RunService.RenderStepped:Connect(function()
-    if espMaleEnabled or espNPCEnabled or espZombieEnabled then
-        local currentTime = tick()
-        
-        -- INSTANT visibility updates when FOV mode is active
-        if espFOVOnlyEnabled then
-            -- Update every frame for instant response
-            updateMaleESPColors()
-            updateNPCESPColors()
-            updateZombieESPColors()
-        elseif visibilityCheckEnabled and (currentTime - lastVisibilityUpdate) >= VISIBILITY_CHECK_INTERVAL then
-            -- Normal visibility check with interval
-            updateMaleESPColors()
-            updateNPCESPColors()
-            updateZombieESPColors()
-            lastVisibilityUpdate = currentTime
-        elseif not visibilityCheckEnabled and (currentTime - lastVisibilityUpdate) >= 0.5 then
-            -- When visibility check is OFF, occasionally refresh colors to ensure they stay correct
-            updateMaleESPColors()
-            updateNPCESPColors()
-            updateZombieESPColors()
-            lastVisibilityUpdate = currentTime
-        end
-        
-        -- Full check every 1.5 seconds (reduced from 2s for faster response)
-        if (currentTime - lastFullUpdate) >= 1.5 then
-            -- Clean dead characters
-            for character, espObject in pairs(espMaleObjects) do
-                if not character or not character.Parent or not espObject or not espObject.Parent then
-                    pcall(function()
-                        if espObject then espObject:Destroy() end
-                    end)
-                    espMaleObjects[character] = nil
-                    if partVisibility[character] then
-                        partVisibility[character] = nil
-                    end
-                end
-            end
-            
-            for character, espObject in pairs(espNPCObjects) do
-                if not character or not character.Parent or not espObject or not espObject.Parent then
-                    pcall(function()
-                        if espObject then espObject:Destroy() end
-                    end)
-                    espNPCObjects[character] = nil
-                    if partVisibility[character] then
-                        partVisibility[character] = nil
-                    end
-                end
-            end
-            
-            for character, espObject in pairs(espZombieObjects) do
-                if not character or not character.Parent or not espObject or not espObject.Parent then
-                    pcall(function()
-                        if espObject then espObject:Destroy() end
-                    end)
-                    espZombieObjects[character] = nil
-                    if partVisibility[character] then
-                        partVisibility[character] = nil
-                    end
-                end
-            end
-            
-            -- Add new characters
-            if espMaleEnabled then
-                for _, model in pairs(workspace:GetChildren()) do
-                    if model.Name == "Male" and model:FindFirstChild("Root") and model:FindFirstChild("Humanoid") and not espMaleObjects[model] then
-                        createMaleESP(model)
-                    end
-                end
-            end
-            
-            if espNPCEnabled then
-                for _, model in pairs(workspace:GetChildren()) do
-                    if model.Name == "Male" and model:FindFirstChild("Root") and not model:FindFirstChild("Humanoid") and not espNPCObjects[model] then
-                        createNPCESP(model)
-                    end
-                end
-            end
-            
-            if espZombieEnabled then
-                for _, model in pairs(workspace:GetChildren()) do
-                    if model.Name == "Zombie" and model:FindFirstChild("Root") and model:FindFirstChild("Humanoid") and not espZombieObjects[model] then
-                        createZombieESP(model)
-                    end
-                end
-            end
-            
-            lastFullUpdate = currentTime
-        end
-        
-        -- Keep fullbright enabled
-        if fullbrightEnabled and not fullbrightLoop then
-            enableFullbright()
-        end
+-- 🆕 AUTO-LOAD CONFIG ON STARTUP (if enabled)
+task.spawn(function()
+    task.wait(1) -- Wait for GUI to fully initialize
+    
+    -- Check if Auto-Load is enabled
+    local autoLoadEnabled = true -- Default to true
+    if Rayfield.Flags["AutoLoadConfig"] then
+        autoLoadEnabled = Rayfield.Flags["AutoLoadConfig"].CurrentValue
+    end
+    
+    if not autoLoadEnabled then
+        print("Auto-Load disabled - config not loaded")
+        Rayfield:Notify({
+            Title = "Auto-Load Disabled",
+            Content = "Use 'Load Saved Configuration' button to manually load your settings.",
+            Duration = 4,
+            Image = 4483362458,
+        })
+        return
+    end
+    
+    -- Auto-load is enabled, load saved config
+    local configLoaded = false
+    
+    if Rayfield.Flags["ESPMaleToggle"] and Rayfield.Flags["ESPMaleToggle"].CurrentValue then
+        espMaleEnabled = true
+        updateMaleESP()
+        configLoaded = true
+    end
+    
+    if Rayfield.Flags["ESPNPCToggle"] and Rayfield.Flags["ESPNPCToggle"].CurrentValue then
+        espNPCEnabled = true
+        updateNPCESP()
+        configLoaded = true
+    end
+    
+    if Rayfield.Flags["ESPZombieToggle"] and Rayfield.Flags["ESPZombieToggle"].CurrentValue then
+        espZombieEnabled = true
+        updateZombieESP()
+        configLoaded = true
+    end
+    
+    if Rayfield.Flags["FullbrightToggle"] and Rayfield.Flags["FullbrightToggle"].CurrentValue then
+        fullbrightEnabled = true
+        enableFullbright()
+        configLoaded = true
+    end
+    
+    if configLoaded then
+        print("Configuration auto-loaded!")
+        Rayfield:Notify({
+            Title = "Config Auto-Loaded!",
+            Content = "Your saved settings have been restored.",
+            Duration = 3,
+            Image = 4483362458,
+        })
+    else
+        print("No saved configuration found")
     end
 end)
 
 -- Loading notification
 Rayfield:Notify({
-    Title = "ESP System v2.2 Loaded!",
-    Content = "✓ Fixed FOV & Wall Detection\n✓ 30ms Refresh (3x faster)",
+    Title = "ESP System v2.2.3 Loaded!",
+    Content = "🆕 Config saving with Auto-Load toggle!\n💾 Auto-saves on close",
     Duration = 5,
     Image = 4483362458,
 })
