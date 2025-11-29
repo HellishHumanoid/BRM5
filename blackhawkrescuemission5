@@ -1254,48 +1254,69 @@ local AutoLoadToggle = SettingsTab:CreateToggle({
 local SaveConfigButton = SettingsTab:CreateButton({
     Name = "💾 Save Current Configuration",
     Callback = function()
+        -- Force Rayfield to save config immediately
+        pcall(function()
+            Rayfield:SaveConfig()
+        end)
+        
         Rayfield:Notify({
             Title = "Configuration Saved!",
-            Content = "All settings, colors, and keybinds saved!\nAuto-Load: " .. (Rayfield.Flags["AutoLoadConfig"].CurrentValue and "ON" or "OFF"),
+            Content = "All settings saved RIGHT NOW!\nAuto-Load: " .. (Rayfield.Flags["AutoLoadConfig"].CurrentValue and "ON" or "OFF"),
             Duration = 4,
             Image = 4483362458,
         })
         
-        -- Rayfield automatically saves when you close the game
-        -- This button just confirms the current state is saved
-        print("Configuration saved!")
+        print("Configuration forcefully saved!")
+        print("ESP Male: " .. tostring(espMaleEnabled))
+        print("ESP NPC: " .. tostring(espNPCEnabled))
+        print("ESP Zombie: " .. tostring(espZombieEnabled))
+        print("Auto-Load: " .. tostring(Rayfield.Flags["AutoLoadConfig"].CurrentValue))
     end,
 })
 
 local LoadConfigButton = SettingsTab:CreateButton({
     Name = "📂 Load Saved Configuration",
     Callback = function()
+        -- Force Rayfield to load config
+        pcall(function()
+            Rayfield:LoadConfig()
+        end)
+        
+        -- Wait a moment for Rayfield to load
+        task.wait(0.2)
+        
         -- Manually trigger ESP updates based on loaded flags
         if Rayfield.Flags["ESPMaleToggle"] then
             espMaleEnabled = Rayfield.Flags["ESPMaleToggle"].CurrentValue
+            ESPMaleToggle:Set(espMaleEnabled)
             updateMaleESP()
         end
         
         if Rayfield.Flags["ESPNPCToggle"] then
             espNPCEnabled = Rayfield.Flags["ESPNPCToggle"].CurrentValue
+            ESPNPCToggle:Set(espNPCEnabled)
             updateNPCESP()
         end
         
         if Rayfield.Flags["ESPZombieToggle"] then
             espZombieEnabled = Rayfield.Flags["ESPZombieToggle"].CurrentValue
+            ESPZombieToggle:Set(espZombieEnabled)
             updateZombieESP()
         end
         
         if Rayfield.Flags["FOVOnlyToggle"] then
             espFOVOnlyEnabled = Rayfield.Flags["FOVOnlyToggle"].CurrentValue
+            FOVOnlyToggle:Set(espFOVOnlyEnabled)
         end
         
         if Rayfield.Flags["VisibilityToggle"] then
             visibilityCheckEnabled = Rayfield.Flags["VisibilityToggle"].CurrentValue
+            VisibilityToggle:Set(visibilityCheckEnabled)
         end
         
         if Rayfield.Flags["FullbrightToggle"] then
             fullbrightEnabled = Rayfield.Flags["FullbrightToggle"].CurrentValue
+            FullbrightToggle:Set(fullbrightEnabled)
             if fullbrightEnabled then
                 enableFullbright()
             else
@@ -1311,6 +1332,9 @@ local LoadConfigButton = SettingsTab:CreateButton({
         })
         
         print("Configuration loaded!")
+        print("ESP Male: " .. tostring(espMaleEnabled))
+        print("ESP NPC: " .. tostring(espNPCEnabled))
+        print("ESP Zombie: " .. tostring(espZombieEnabled))
     end,
 })
 
@@ -1358,8 +1382,8 @@ local ResetConfigButton = SettingsTab:CreateButton({
 })
 
 local ConfigInfo = SettingsTab:CreateParagraph({
-    Title = "Auto-Save & Auto-Load Info",
-    Content = "✅ Rayfield automatically saves your config when you close the game!\n\n🔄 Auto-Load Toggle:\n• ON: Config loads automatically on startup\n• OFF: You must manually load config\n\n💾 Save Button: Confirms current settings\n📂 Load Button: Restores last saved config\n🔄 Reset Button: Restores default settings\n\nSaved Settings Include:\n• All ESP toggles\n• ESP colors (including HEX)\n• FOV & Visibility modes\n• Fullbright state\n• Keybinds\n• Refresh rate\n• Auto-Load preference"
+    Title = "Config Saving Guide",
+    Content = "⚠️ IMPORTANT: Always click '💾 Save' button!\n\n🔧 How to Save Properly:\n1. Configure your ESP settings\n2. Click '💾 Save Current Configuration'\n3. Wait for 'Configuration Saved!' notification\n4. Config is now saved to file!\n\n🔄 Auto-Load Toggle:\n• ON: Config loads automatically on startup\n• OFF: You must manually load config\n\n📂 Manual Load: Use if auto-load fails\n🔄 Reset: Restores all defaults\n\n✅ Check Output/Console to verify save!\nLook for 'Configuration forcefully saved!'"
 })
 
 -- DESTROY SECTION
@@ -1665,13 +1689,23 @@ end)
 
 -- 🆕 AUTO-LOAD CONFIG ON STARTUP (if enabled)
 task.spawn(function()
-    task.wait(1) -- Wait for GUI to fully initialize
+    task.wait(1.5) -- Wait longer for GUI to fully initialize and config to load
+    
+    -- Force load config first
+    pcall(function()
+        Rayfield:LoadConfig()
+    end)
+    
+    task.wait(0.3) -- Give it time to process
     
     -- Check if Auto-Load is enabled
     local autoLoadEnabled = true -- Default to true
     if Rayfield.Flags["AutoLoadConfig"] then
         autoLoadEnabled = Rayfield.Flags["AutoLoadConfig"].CurrentValue
     end
+    
+    print("=== CONFIG AUTO-LOAD DEBUG ===")
+    print("Auto-Load Enabled: " .. tostring(autoLoadEnabled))
     
     if not autoLoadEnabled then
         print("Auto-Load disabled - config not loaded")
@@ -1689,38 +1723,68 @@ task.spawn(function()
     
     if Rayfield.Flags["ESPMaleToggle"] and Rayfield.Flags["ESPMaleToggle"].CurrentValue then
         espMaleEnabled = true
+        ESPMaleToggle:Set(true)
         updateMaleESP()
         configLoaded = true
+        print("Loaded ESP Male: ON")
     end
     
     if Rayfield.Flags["ESPNPCToggle"] and Rayfield.Flags["ESPNPCToggle"].CurrentValue then
         espNPCEnabled = true
+        ESPNPCToggle:Set(true)
         updateNPCESP()
         configLoaded = true
+        print("Loaded ESP NPC: ON")
     end
     
     if Rayfield.Flags["ESPZombieToggle"] and Rayfield.Flags["ESPZombieToggle"].CurrentValue then
         espZombieEnabled = true
+        ESPZombieToggle:Set(true)
         updateZombieESP()
         configLoaded = true
+        print("Loaded ESP Zombie: ON")
     end
     
     if Rayfield.Flags["FullbrightToggle"] and Rayfield.Flags["FullbrightToggle"].CurrentValue then
         fullbrightEnabled = true
+        FullbrightToggle:Set(true)
         enableFullbright()
         configLoaded = true
+        print("Loaded Fullbright: ON")
     end
     
+    if Rayfield.Flags["FOVOnlyToggle"] and Rayfield.Flags["FOVOnlyToggle"].CurrentValue then
+        espFOVOnlyEnabled = true
+        FOVOnlyToggle:Set(true)
+        configLoaded = true
+        print("Loaded FOV Only: ON")
+    end
+    
+    if Rayfield.Flags["VisibilityToggle"] and Rayfield.Flags["VisibilityToggle"].CurrentValue then
+        visibilityCheckEnabled = true
+        VisibilityToggle:Set(true)
+        configLoaded = true
+        print("Loaded Visibility Check: ON")
+    end
+    
+    print("=== END CONFIG DEBUG ===")
+    
     if configLoaded then
-        print("Configuration auto-loaded!")
+        print("Configuration auto-loaded successfully!")
         Rayfield:Notify({
-            Title = "Config Auto-Loaded!",
+            Title = "Config Auto-Loaded! ✅",
             Content = "Your saved settings have been restored.",
             Duration = 3,
             Image = 4483362458,
         })
     else
-        print("No saved configuration found")
+        print("No saved configuration found or all settings were OFF")
+        Rayfield:Notify({
+            Title = "No Config Found",
+            Content = "Configure your settings and click '💾 Save'!",
+            Duration = 4,
+            Image = 4483362458,
+        })
     end
 end)
 
